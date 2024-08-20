@@ -1,0 +1,139 @@
+---
+title: "NYPDShootingIncidentDataReport"
+author: "SridharRamachandran"
+date: "2024-07-21"
+output:
+  pdf_document: 
+    toc: true
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(ggmap)
+library(ggspatial)
+```
+
+## Introduction
+
+The files for the NYPD Shooting Incident Data Report project was sourced from <https://catalog.data.gov/dataset>. The data source is in CSV format.
+
+## Importing Data
+
+I am using read_csv to read csv data downloaded from the link. This needs *tidyverse* library
+```{r intake, include=TRUE}
+url = "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd = read_csv(url)
+```
+
+## **Tidying and Transforming Data**
+Using *lubridate* and *dplyr* libraries, I am performing transformations on the data
+
+### 1. Transform Date and Time to date and time formats
+```{r dateandtime}
+nypd_reduced = nypd %>% mutate(OCCUR_DATE = as.Date(OCCUR_DATE,"%m/%d/%y"),OCCUR_TIME = hms::as_hms(OCCUR_TIME))
+```
+
+### 2. Select reduced set of columns for analysis
+I am interested to analyze dates, borough, demographics and so am excluding rest of the columns. The columns selected for analysis are *INCIDENT_KEY, OCCUR_TIME, OCCUR_DATE, BORO, PRECINCT, STATISTICAL_MURDER_FLAG, PERP_AGE_GROUP, PERP_SEX, VIC_AGE_GROUP, VIC_SEX, Latitude, Longitude*
+
+```{r columns}
+nypd_reduced = nypd_reduced %>% select (INCIDENT_KEY, OCCUR_TIME, OCCUR_DATE, BORO, PRECINCT, STATISTICAL_MURDER_FLAG, PERP_AGE_GROUP, PERP_SEX, VIC_AGE_GROUP, VIC_SEX, Latitude, Longitude)
+```
+
+### 3. Adding an Hour column from Occur Time
+For analysis, I am extracting hour from Time and adding as a new column
+```{r hour}
+nypd_reduced <- nypd_reduced %>% mutate(HOUR = lubridate::hour(OCCUR_TIME))
+```
+
+### 4. Any NA values will be converted to "Unknown"
+I am defaulting NA values in select columns to "Unknown"
+```{r default}
+nypd_reduced = nypd_reduced %>% replace_na(list(PERP_AGE_GROUP = "UNKNOWN", PERP_SEX = "UNKNOWN", VIC_AGE_GROUP = "UNKNOWN", VIC_SEX = "UNKNOWN"))
+```
+
+### **Summary of data**
+```{r summary}
+summary(nypd_reduced)
+```
+
+## **Visualizing and Analyzing Data**
+I am analyzing the number of incidents by month over different variables such as perpetrator and victim attributes, borough and date and time factors.
+
+```{r incidentbymonth}
+incident_by_month = nypd_reduced %>% mutate(MONTH = month(OCCUR_DATE, label = TRUE, abbr = TRUE)) %>% group_by(BORO,MONTH, HOUR, PERP_AGE_GROUP, PERP_SEX, VIC_AGE_GROUP, VIC_SEX) %>% summarize(INCIDENTS = n(),.groups = 'drop')
+```
+
+### 1. Visualization 1
+```{r plot1}
+incident_by_month %>% ggplot(aes(x = MONTH, y = INCIDENTS)) + 
+  geom_line(color = "blue", size = 1) + 
+  geom_point(color= "red", size = 1) + 
+  labs(title = "Shooting Incidents in NYC Over Time", x = "Month", y = "Number of Incidents") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+### 2. Visualization 2
+```{r plot2}
+incident_by_month %>% 
+  ggplot(aes(x = VIC_AGE_GROUP, y = INCIDENTS)) +
+  geom_bar(stat = "identity", fill = "skyblue") +  # Create bar chart
+  labs(title = "Shooting Incidents by Perpetrator Age Group",
+       x = "Age Group",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels
+
+```
+
+### 3. Visualization 3
+```{r plot3}
+incident_by_month %>% ggplot(aes(x = BORO, y = INCIDENTS)) + geom_point() + labs(title = "Number of Incidents by Borough", x = "Boro", y = "Number of Incidents")
+```
+
+## **Modeling Data**
+I have modeled the relationship between the number of incidents (count) and the month for a specific borough. For simplicity I have selected "Brooklyn" borough
+
+### 1. Developing the linear model
+```{r modeldata}
+nypd_brooklyn <- nypd_reduced %>% mutate(MONTH = month(OCCUR_DATE)) %>% filter(BORO == "BROOKLYN") %>% group_by(MONTH) %>% summarize(count = n(), .groups = 'drop')
+```
+
+```{r model}
+model = lm(count ~ MONTH, data = nypd_brooklyn)
+```
+
+### 2. Visualizing the results
+```{r graphdata}
+ggplot(nypd_brooklyn, aes(x =MONTH, y = count)) + geom_point() + geom_smooth(method = "lm", col = "red") + labs(title = "Linear Model: Number of Incidents by Month in Brooklyn", x = "Month", y = "Number of Incidents")
+```
+
+## **Bias in Modeling**
+I chose to consider lack of including year in the analysis as a source of bias. Seasonal effects and changes in reporting practices over the years will be accounted for by including the year. I have considered both month and year to account for potential temporal changes in the data.
+
+```{r accountforbias}
+nypd_brooklyn_bias <- nypd_reduced %>% mutate(MONTH = month(OCCUR_DATE), YEAR = year(OCCUR_DATE)) %>% filter(BORO == "BROOKLYN") %>% group_by(YEAR, MONTH) %>% summarize(count = n(), .groups = 'drop')
+```
+### 1. Generating the model
+```{r biasmodel}
+model_bias <- lm(count ~ MONTH + YEAR, data = nypd_brooklyn_bias)
+```
+
+### 2. Visualizing the results
+```{r visualizebiasmodel}
+ggplot(nypd_brooklyn_bias, aes(x =MONTH, y = count, color = factor(YEAR))) + geom_point() + geom_smooth(method = "lm", se = FALSE) + labs(title = "Linear Model: Number of Incidents by Month in Brooklyn (colored by year)", x = "Month", y = "Number of Incidents", color = "Year")
+```
+
+## **Session Info**
+```{r sessionInfo}
+sessionInfo()
+```
